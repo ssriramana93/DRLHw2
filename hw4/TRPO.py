@@ -221,6 +221,9 @@ def gaussian_sample_action(mean, logstdev, a_lb, a_ub):
 	#U = tf.where(ub_index, tf.cast(ub,tf.float32), U)
 	return U
 
+#def compute_inv(gvs):
+
+
 
 
 def main_cartpole(n_iter=100, gamma=1.0, min_timesteps_per_batch=1000, stepsize=1e-2, animate=True, logdir=None):
@@ -255,7 +258,11 @@ def main_cartpole(n_iter=100, gamma=1.0, min_timesteps_per_batch=1000, stepsize=
     sy_surr = - tf.reduce_mean(sy_adv_n * sy_logprob_n) # Loss function that we'll differentiate to get the policy gradient ("surr" is for "surrogate loss")
 
     sy_stepsize = tf.placeholder(shape=[], dtype=tf.float32) # Symbolic, in case you want to change the stepsize during optimization. (We're not doing that currently)
-    update_op = tf.train.AdamOptimizer(sy_stepsize).minimize(sy_surr)
+    #update_op = tf.train.AdamOptimizer(sy_stepsize).minimize(sy_surr)
+    optimizer = tf.train.AdamOptimizer(sy_stepsize)
+    gvs = tf.compute_gradients(sy_surr)
+    finvg = compute_inv(gvs)
+
 
     tf_config = tf.ConfigProto(inter_op_parallelism_threads=1, intra_op_parallelism_threads=1) 
     # use single thread. on such a small problem, multithreading gives you a slowdown
@@ -358,9 +365,103 @@ def getGaussianDiffEntropy(mean, logstd):
 	diffEnt = 0.5*tf.log(2*np.pi*np.exp(1)*(std)**2)
 	return diffEnt
 
+#def GAE():
+def ComputeHVP(theta, kl, gradient, vector):
+	print "In"
+	gradient_vector_product = tf.reduce_sum( gradient * vector )
+	print "In"
+
+	hessian_vector_product = tf.gradients(gradient_vector_product, theta)
+	print "In"
+	return hessian_vector_product
+
+def CG(kl, theta, g, gradient, cgIter = 100):
+	x = tf.zeros_like(theta, dtype=tf.float32)
+	print g.get_shape().as_list()
+	b_list = []
+	for k in xrange(cgIter):
+  	#	'''
+		r = g - ComputeHVP(theta, kl, gradient, x)
+		sum_b = tf.reduce_sum([(tf.matmul(tf.transpose(r), ComputeHVP(theta, kl, gradient, b_list[i]))/(tf.matmul(tf.transpose(b_list[i]),ComputeHVP(theta, kl, gradient, b_list[i]))))*b_list[i] for i in xrange(k)])
+
+		b = r - sum_b
+
+		a = tf.matmul(tf.transpose(b), g)/(tf.matmul(tf.transpose(),ComputeHVP(theta, kl, gradient, b)))
+
+		x = x + a*b
+
+		b_list.append(b)
+	#	'''
+		'''
+		rnew = rold - a*ComputeHVP(theta, kl, gradient, b)
+		beta = tf.matmul(tf.transpose(rnew),rnew)/tf.matmul(tf.transpose(rold),rold)
+		b = rnew + beta*b
+		a = tf.matmul(tf.transpose(b), g)/(tf.matmul(tf.transpose(),ComputeHVP(theta, kl, gradient, b)))
+  		x = x + a*b
+  		'''
+	return x
+
+def flatten1(varlist):
+	var = varlist[0]
+	var = tf.expand_dims(var,0)
+	flatvar = tf.contrib.layers.flatten(var)
+
+	#flatgrad = tf.Variable(dtype = tf.float32)
+	#flatvar = tf.Variable(dtype = tf.float32)
+	for var in varlist[1:]:
+		var = tf.expand_dims(var,0)
+		tempv = tf.contrib.layers.flatten(var)
+		flatvar = tf.concat([flatvar,tempv],1)
+	return flatvar	
+
+def flatten(gradvarlist):
+	grad, var = gradvarlist[0]
+	grad = tf.expand_dims(grad,0)
+	var = tf.expand_dims(var,0)
+	tf.Print(grad,[grad],"grad")
+	print grad.get_shape().as_list()
+	flatgrad = tf.contrib.layers.flatten(grad)
+	flatvar = tf.contrib.layers.flatten(var)
+	print flatgrad.get_shape().as_list()
+
+	#flatgrad = tf.Variable(dtype = tf.float32)
+	#flatvar = tf.Variable(dtype = tf.float32)
+	for grad, var in gradvarlist[1:]:
+		grad = tf.expand_dims(grad,0)
+		var = tf.expand_dims(var,0)
+		tempg = tf.contrib.layers.flatten(grad)
+		tempv = tf.contrib.layers.flatten(var)
+		print tempg.get_shape().as_list()
+
+		flatgrad = tf.concat([flatgrad,tempg],1)
+		flatvar = tf.concat([flatvar,tempv],1)
+	return flatgrad, flatvar
+
+def unflatten(flatgrad,flatvar,gradvarlist):
+	index = tf.zero()
+	for grad, var in gradvarlist:
+		shape = tf.shape(grad)
+		grad = tf.reshape(shape, tf.slice(flatgrad,index,tf.size(grad)))
+		var = tf.reshape(shape, tf.slice(flatvar,index,tf.size(grad)))
+		index = index + tf.size(grad)
 
 
-def main_pendulum(logdir, seed, n_iter, gamma, min_timesteps_per_batch, initial_stepsize, desired_kl, vf_type, vf_params, animate=False):
+	return gradvarlist
+
+def applystep(s, flatgrad, flatvar):
+	flatvar += s*flatgrad
+	return flatvar, flatgrad
+
+def LineSearch(gradvarlist, obj, s):
+
+#	while True:
+
+
+
+	return gradvarlist
+
+
+def main_pendulum(logdir, seed, n_iter, gamma, min_timesteps_per_batch, del_kl, vf_type, vf_params, animate=False):
     tf.set_random_seed(seed)
     np.random.seed(seed)
     env = gym.make("Pendulum-v0")
@@ -384,49 +485,72 @@ def main_pendulum(logdir, seed, n_iter, gamma, min_timesteps_per_batch, initial_
     sy_ac_n = tf.placeholder(shape=[None, ac_dim], name="ac", dtype=tf.float32) # batch of actions taken by the policy, used for policy gradient computation
     sy_adv_n = tf.placeholder(shape=[None], name="adv", dtype=tf.float32) # advantage function estimate
 
-    sy_h1 = lrelu(dense(sy_ob_no, 300, "h1", weight_init=xavier_initializer())) # hidden layer
-    sy_h2 = lrelu(dense(sy_h1, 300, "h2", weight_init=xavier_initializer()))
+    sy_h1 = lrelu(dense(sy_ob_no, 300, "h1", weight_init=tf.contrib.layers.xavier_initializer())) # hidden layer
+    sy_h2 = lrelu(dense(sy_h1, 300, "h2", weight_init=tf.contrib.layers.xavier_initializer()))
     #sy_h3 = lrelu(dense(sy_h2, 32, "h3", weight_init=normc_initializer(1.0)))
 
     #sy_h3 = lrelu(dense(sy_h2, 20, "h3", weight_init=normc_initializer(1.0)))
-    sy_mean = dense(sy_h2, ac_dim, "mean", weight_init=xavier_initializer())
+    sy_mean = dense(sy_h2, ac_dim, "mean", weight_init=tf.contrib.layers.xavier_initializer())
     #sy_mean = tf.multiply(tf.cast(a_bnds,tf.float32),tf.tanh(dense(sy_h2, ac_dim, "mean", weight_init=normc_initializer(10.0))))
 
     sy_logstd = tf.get_variable("logstdev", [ac_dim], initializer=tf.zeros_initializer()) # Variance
-#    sy_logstd = [tf.log(0.3)] 
     sy_sampled_ac = gaussian_sample_action(sy_mean,sy_logstd, a_lb, a_ub)
 
     sy_logprob_n = gaussian_log_prob(sy_mean,sy_logstd, sy_ac_n)
     sy_n = tf.shape(sy_ob_no)[0]
 
-#    sy_logp_na = gaussian_log_prob(sy_mean,logstd_a,sy_sampled_ac)
-    #oldlogstd_a = 
+
     sy_oldmean = tf.placeholder(shape=[None, ac_dim], name='oldmean', dtype=tf.float32)
     sy_oldlogstd = tf.placeholder(shape=[None, ac_dim], name='oldlogstdev', dtype=tf.float32)
 
-    #sy_oldlogp_na = tf.placeholder(shape=[None, ac_dim], name='oldlogprob', dtype=tf.float32)
 
     sy_kl = getGaussianKL(sy_oldmean, sy_mean, sy_oldlogstd, sy_logstd, sy_n)
-
-   
- 
     sy_ent = getGaussianDiffEntropy(sy_mean, sy_logstd)
 
 
 
     
 
-    print "D1"
 
     sy_surr = - tf.reduce_mean(tf.multiply(sy_adv_n,sy_logprob_n)) # Loss function that we'll differentiate to get the policy gradient ("surr" is for "surrogate loss")
     sy_stepsize = tf.placeholder(shape=[], dtype=tf.float32) # Symbolic, in case you want to change the stepsize during optimization. (We're not doing that currently)
-    update_op = tf.train.AdamOptimizer(sy_stepsize).minimize(sy_surr)
+    #update_op = tf.train.AdamOptimizer(sy_stepsize).minimize(sy_surr)
+    optimizer = tf.train.GradientDescentOptimizer(1.0)
+    gvs = optimizer.compute_gradients(sy_surr)
+    #gvs = tf.gradients(sy_surr)
+    var_list = [tf.contrib.layers.flatten(tf.expand_dims(var,0)) for grad,var in gvs]
+    grad_list = [tf.contrib.layers.flatten(tf.expand_dims(grad,0)) for grad,var in gvs]
+
+
+    #sy_gtheta, sy_theta = flatten(gvs)
+    #sy_theta = tf.placeholder(shape = [None], name = "theta",dtype = tf.float32)
+    #sy_gtheta = tf.placeholder(shape = tf.shape(theta), name = "gtheta",dtype = tf.float32)
+
+    dist = tf.contrib.distributions.MultivariateNormalDiag(loc = sy_mean,scale_diag = tf.exp(sy_logstd))
+    olddist = tf.contrib.distributions.MultivariateNormalDiag(loc = sy_oldmean,scale_diag = tf.exp(sy_oldlogstd))
+    sy_kl = tf.reduce_mean(tf.contrib.distributions.kl(olddist, dist))
+    #gradient = flatten1(tf.gradients(sy_kl,gvar))
+    #print sy_theta.get_shape().as_list(), gradient.get_shape().as_list()
+
+    s_unc = CG(sy_kl, sy_theta, sy_gtheta, gradient)
+    s = tf.sqrt(2*del_kl/(tf.matmul(tf.transpose(s_unc), ComputeHVP(sy_kl, sy_theta, gradient, s_unc))))*s_unc
+
+    sy_gtheta, sy_theta =applystep(s, sy_gtheta, sy_theta)
+    gvs_mod = unflatten(sy_gtheta, sy_theta, gvs)
+    train_op = optimizer.apply_gradients(gvs_mod)
+
+    
+
+       #actprob = dist.prob(sy_ac_n)
+
+
+
+
 
     sess = tf.Session()
     sess.__enter__() # equivalent to `with sess:`
     tf.global_variables_initializer().run() #pylint: disable=E1101
    # vf.registerSession(sess)
-    print "D2"
     #testShit>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
     s_ac = []
     sy_testmean = tf.placeholder(shape=[None, ac_dim], name='oldmean', dtype=tf.float32)
@@ -530,20 +654,13 @@ def main_pendulum(logdir, seed, n_iter, gamma, min_timesteps_per_batch, initial_
         print "Loss = ", sess.run(sy_surr,feed_dict={sy_ob_no:ob_no, sy_ac_n:ac_n, sy_adv_n:standardized_adv_n, sy_stepsize:stepsize})  
         # Policy update
         oldmean,oldlogstd,oldlogprob = sess.run([sy_mean,sy_logstd,sy_logprob_n], feed_dict={sy_ob_no:ob_no, sy_ac_n:ac_n, sy_adv_n:standardized_adv_n, sy_stepsize:stepsize})
-        sess.run([update_op], feed_dict={sy_ob_no:ob_no, sy_ac_n:ac_n, sy_adv_n:standardized_adv_n, sy_stepsize:stepsize})
+        _,oldgvs = sess.run([train_op, gvs], feed_dict={sy_ob_no:ob_no, sy_ac_n:ac_n, sy_adv_n:standardized_adv_n, sy_stepsize:stepsize})
+        for grad, var in oldgvs:
+        	print "var", var
 
-        #print "ac = ", ac_n, "oldmean = ", oldmean,"oldlogstd = ", oldlogstd
-        #>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-        '''std1 = np.exp(oldoldlogstd)
-        std2 = np.exp(oldlogstd)
-        tr = (std1**2)/(std2**2)
-        delMean = oldoldmean - oldmean
-        print 0.5*np.mean(np.log((std2**2)/(std1**2)) + tr + np.multiply(delMean,delMean/(std2**2)) - 1)
-        oldoldmean = oldmean
-        oldoldlogstd = oldlogstd'''
-        #>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+       
         kl, ent = sess.run([sy_kl, sy_ent], feed_dict={sy_ob_no:ob_no, sy_oldmean:oldmean, sy_oldlogstd: np.reshape(oldlogstd,[1,ac_dim])})
-        #oldoldmean = oldmean
 
         print "Done"
         if kl > desired_kl * 2: 
@@ -577,7 +694,7 @@ if __name__ == "__main__":
         main_cartpole(logdir=None) # when you want to start collecting results, set the logdir
 
     if 1:
-        general_params = dict(gamma=0.97, animate=False, min_timesteps_per_batch=2500, n_iter=1000, initial_stepsize=1e-7)
+        general_params = dict(gamma=0.97, animate=False, min_timesteps_per_batch=2500, n_iter=1000)
         params = [
 
             dict(logdir= None , seed=0, desired_kl=2e-6, vf_type='linear', vf_params={}, **general_params),
@@ -591,7 +708,7 @@ if __name__ == "__main__":
         ]
         p = dict(logdir= None , seed=0, desired_kl=2e-6, vf_type='linear', vf_params={}, **general_params),
 
-        main_pendulum(logdir=None , seed=0, desired_kl=2e-4, vf_type='linear', vf_params={}, gamma=0.97, animate=False, min_timesteps_per_batch=2500, n_iter=1000, initial_stepsize=1e-6)
+        main_pendulum(logdir=None , seed=0, del_kl=2e-4, vf_type='linear', vf_params={}, gamma=0.97, animate=False, min_timesteps_per_batch=2500, n_iter=1000)
 #        import multiprocessing
 
 #        p = multiprocessing.Pool()
